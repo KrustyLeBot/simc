@@ -18,9 +18,30 @@ util::span<const curve_point_t> curve_point_t::data( bool ptr )
 
 util::span<const curve_point_t> curve_point_t::find( unsigned id, bool ptr )
 {
+  // Hot path: combat rating diminishing returns look up the same few curves every time a stat cache is invalidated.
+  // The data is immutable, so cache the resulting span (direct-mapped, per thread).
+  struct cache_entry_t
+  {
+    unsigned id = 0;
+    bool ptr = false;
+    const curve_point_t* first = nullptr;
+    size_t size = 0;
+  };
+  thread_local std::array<cache_entry_t, 16> cache;
+  auto& entry = cache[ ( id ^ ( ptr ? 8u : 0u ) ) & 15u ];
+  if ( entry.first && entry.id == id && entry.ptr == ptr )
+  {
+    return { entry.first, entry.size };
+  }
+
   const auto __data = data( ptr );
 
   auto r = range::equal_range( __data, id, {}, &curve_point_t::curve_id );
+  if ( r.first != r.second )
+  {
+    entry = { id, ptr, &*r.first, static_cast<size_t>( r.second - r.first ) };
+  }
+
   if ( r.first == __data.end() )
   {
     return {};
