@@ -29,6 +29,8 @@
 #include "player/player.hpp"
 #include "item/item.hpp"
 
+#include <thread>
+
 namespace { // ANONYMOUS namespace ==========================================
 
 // Wrapper class to map other data to specific spells, and also to map effects that manipulate that
@@ -166,25 +168,44 @@ static void generate_indices( bool ptr )
  */
 void dbc::init()
 {
+  // Runtime linking (eg. from spell_data to all its effects), then index generation. Startup is bound
+  // by first-touch page faults on the large static tables, so the work runs concurrently: live and
+  // PTR data (and their indices) are fully disjoint, and the spell and effect link passes write
+  // disjoint fields (spell -> effects/power/driver/labels pointers, effect -> spell pointers).
+#ifndef SC_NO_THREADING
+  auto link_and_index = []( bool ptr ) {
+    std::thread effects( [ ptr ] { spelleffect_data_t::link( ptr ); } );
+    spell_data_t::link( ptr );
+    effects.join();
+    generate_indices( ptr );
+  };
+
+  std::thread ptr_data;
+  if ( SC_USE_PTR )
+  {
+    ptr_data = std::thread( link_and_index, true );
+  }
+
   // Create id-indexes
   init_item_data();
 
-  // runtime linking, eg. from spell_data to all its effects
-  spell_data_t::link( false );
-  spelleffect_data_t::link( false );
+  link_and_index( false );
 
-  if ( SC_USE_PTR )
+  if ( ptr_data.joinable() )
   {
-    spell_data_t::link( true );
-    spelleffect_data_t::link( true );
+    ptr_data.join();
   }
-
-  // Generate indices
-  generate_indices( false );
-  if ( SC_USE_PTR )
+#else
+  init_item_data();
+  for ( bool ptr : { false, true } )
   {
-    generate_indices( true );
+    if ( ptr && !SC_USE_PTR )
+      continue;
+    spell_data_t::link( ptr );
+    spelleffect_data_t::link( ptr );
+    generate_indices( ptr );
   }
+#endif
 }
 
 /* Validate gem color */

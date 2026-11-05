@@ -20,6 +20,8 @@
 #include "util/generic.hpp"
 #include "util/util.hpp"
 
+#include <thread>
+
 // ==========================================================================
 // Spell Label Data - SpellLabel.db2
 // ==========================================================================
@@ -610,20 +612,66 @@ util::span<const spelleffect_data_t> spelleffect_data_t::data( bool ptr )
   return _data( ptr );
 }
 
+// Startup linking of the static client data tables is bound by first-touch page faults on the large
+// tables, so it is split in LINK_CHUNKS contiguous chunks processed concurrently.
+static constexpr size_t LINK_CHUNKS = 4;
+
+static size_t link_chunk_begin( size_t n, size_t chunk )
+{
+  return std::min( n, chunk * ( ( n + LINK_CHUNKS - 1 ) / LINK_CHUNKS ) );
+}
+
+template <typename Fn>
+static void run_link_chunks( Fn&& fn )
+{
+#ifndef SC_NO_THREADING
+  std::array<std::thread, LINK_CHUNKS - 1> workers;
+  for ( size_t c = 1; c < LINK_CHUNKS; ++c )
+    workers[ c - 1 ] = std::thread( [ &fn, c ] { fn( c ); } );
+  fn( size_t( 0 ) );
+  for ( auto& t : workers )
+    t.join();
+#else
+  for ( size_t c = 0; c < LINK_CHUNKS; ++c )
+    fn( c );
+#endif
+}
+
 void spelleffect_data_t::link( bool ptr )
 {
-  for ( spelleffect_data_t& ed : _data( ptr ) )
-  {
-    if ( ed.id() == 0 )
+  // Effects are stored grouped by spell and most have no trigger spell, so memoizing the previous
+  // lookups avoids nearly all of the binary searches over the (large) spell table at startup.
+  const auto effects = _data( ptr );
+  run_link_chunks( [ & ]( size_t c ) {
+    unsigned last_spell_id = 0, last_trigger_id = 0;
+    const spell_data_t* last_spell = spell_data_t::find( 0, ptr );
+    const spell_data_t* last_trigger = last_spell;
+
+    for ( size_t i = link_chunk_begin( effects.size(), c ), end = link_chunk_begin( effects.size(), c + 1 );
+          i < end; ++i )
     {
-      ed._spell = ed._trigger_spell = spell_data_t::not_found();
+      spelleffect_data_t& ed = effects[ i ];
+      if ( ed.id() == 0 )
+      {
+        ed._spell = ed._trigger_spell = spell_data_t::not_found();
+      }
+      else
+      {
+        if ( ed.spell_id() != last_spell_id )
+        {
+          last_spell_id = ed.spell_id();
+          last_spell = spell_data_t::find( last_spell_id, ptr );
+        }
+        if ( ed.trigger_spell_id() != last_trigger_id )
+        {
+          last_trigger_id = ed.trigger_spell_id();
+          last_trigger = spell_data_t::find( last_trigger_id, ptr );
+        }
+        ed._spell = last_spell;
+        ed._trigger_spell = last_trigger;
+      }
     }
-    else
-    {
-      ed._spell = spell_data_t::find( ed.spell_id(), ptr );
-      ed._trigger_spell = spell_data_t::find( ed.trigger_spell_id(), ptr );
-    }
-  }
+  } );
 }
 
 util::span<spelleffect_data_t> spelleffect_data_t::_data( bool ptr )
@@ -821,19 +869,55 @@ static auto spell_data_linker( util::span<T, N> data )
 
 void spell_data_t::link( bool ptr )
 {
-  auto link_effects = spell_data_linker( spelleffect_data_t::data( ptr ) );
-  auto link_power = spell_data_linker( spellpower_data_t::data( ptr ) );
-  auto link_driver =
-      spell_data_linker( SC_DBC_GET_DATA( __spelldriver_index_data, __ptr_spelldriver_index_data, ptr ) );
-  auto link_labels = spell_data_linker( spelllabel_data_t::data( ptr ) );
+  // The spell table is large and this pass is bound by first-touch page faults, so it is split in
+  // chunks: a parallel pass sums the per-chunk counts (giving each chunk its starting offsets), then
+  // a parallel pass assigns the pointers. The result is identical to a single sequential pass.
+  const auto spells = _data( ptr );
+  const auto effects = spelleffect_data_t::data( ptr );
+  const auto power = spellpower_data_t::data( ptr );
+  const auto driver = SC_DBC_GET_DATA( __spelldriver_index_data, __ptr_spelldriver_index_data, ptr );
+  const auto labels = spelllabel_data_t::data( ptr );
 
-  for ( spell_data_t& sd : _data( ptr ) )
+  struct offsets_t { size_t effects = 0, power = 0, driver = 0, labels = 0; };
+  auto chunk_begin = [ & ]( size_t c ) { return link_chunk_begin( spells.size(), c ); };
+
+  std::array<offsets_t, LINK_CHUNKS + 1> start{};
+
+  run_link_chunks( [ & ]( size_t c ) {
+    offsets_t sum;
+    for ( size_t i = chunk_begin( c ), end = chunk_begin( c + 1 ); i < end; ++i )
+    {
+      sum.effects += spells[ i ]._effects_count;
+      sum.power += spells[ i ]._power_count;
+      sum.driver += spells[ i ]._driver_count;
+      sum.labels += spells[ i ]._labels_count;
+    }
+    start[ c + 1 ] = sum;
+  } );
+
+  for ( size_t c = 1; c <= LINK_CHUNKS; ++c )
   {
-    link_effects( sd._effects, sd._effects_count );
-    link_power( sd._power, sd._power_count );
-    link_driver( sd._driver, sd._driver_count );
-    link_labels( sd._labels, sd._labels_count );
+    start[ c ].effects += start[ c - 1 ].effects;
+    start[ c ].power += start[ c - 1 ].power;
+    start[ c ].driver += start[ c - 1 ].driver;
+    start[ c ].labels += start[ c - 1 ].labels;
   }
+
+  run_link_chunks( [ & ]( size_t c ) {
+    auto link_effects = spell_data_linker( effects.subspan( start[ c ].effects ) );
+    auto link_power = spell_data_linker( power.subspan( start[ c ].power ) );
+    auto link_driver = spell_data_linker( driver.subspan( start[ c ].driver ) );
+    auto link_labels = spell_data_linker( labels.subspan( start[ c ].labels ) );
+
+    for ( size_t i = chunk_begin( c ), end = chunk_begin( c + 1 ); i < end; ++i )
+    {
+      spell_data_t& sd = spells[ i ];
+      link_effects( sd._effects, sd._effects_count );
+      link_power( sd._power, sd._power_count );
+      link_driver( sd._driver, sd._driver_count );
+      link_labels( sd._labels, sd._labels_count );
+    }
+  } );
 }
 
 util::span<spell_data_t> spell_data_t::_data( bool ptr )
