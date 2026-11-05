@@ -6789,8 +6789,12 @@ void player_t::trigger_ready()
 
 void player_t::schedule_off_gcd_ready( timespan_t delta_time )
 {
-  if ( delta_time < 0_ms )
-    delta_time = timespan_t::from_millis( rng().gauss( 100, 10 ) );
+  // The poll delay is drawn up front (keeps the RNG stream unchanged), but its value is only
+  // computed if the poll event is actually scheduled.
+  const bool random_delay = delta_time < 0_ms;
+  rng::rng_t::deferred_gauss_t delay{};
+  if ( random_delay )
+    delay = rng().gauss_deferred();
 
   if ( active_off_gcd_list == nullptr )
   {
@@ -6819,6 +6823,9 @@ void player_t::schedule_off_gcd_ready( timespan_t delta_time )
     return;
   }
 
+  if ( random_delay )
+    delta_time = timespan_t::from_millis( delay.get( 100, 10 ) );
+
   // No time left to perform a poll event before GCD elapses
   if ( sim->current_time() + delta_time >= readying->occurs() )
   {
@@ -6838,8 +6845,11 @@ void player_t::schedule_off_gcd_ready( timespan_t delta_time )
 
 void player_t::schedule_cwc_ready( timespan_t delta_time )
 {
-  if ( delta_time < 0_ms )
-    delta_time = timespan_t::from_millis( rng().gauss( 100, 10 ) );
+  // See schedule_off_gcd_ready(): same RNG draws, value computed only when needed.
+  const bool random_delay = delta_time < 0_ms;
+  rng::rng_t::deferred_gauss_t delay{};
+  if ( random_delay )
+    delay = rng().gauss_deferred();
 
   if ( active_cast_while_casting_list == nullptr )
   {
@@ -6886,6 +6896,9 @@ void player_t::schedule_cwc_ready( timespan_t delta_time )
   {
     return;
   }
+
+  if ( random_delay )
+    delta_time = timespan_t::from_millis( delay.get( 100, 10 ) );
 
   // No time left to perform a poll event before the threshold finishes
   if ( sim->current_time() + delta_time >= threshold )

@@ -200,10 +200,71 @@ private:
   // Allow re-use of unused ( but necessary ) random number of a previous call to gauss()
   double gauss_pair_value = 0.0;
   bool   gauss_pair_use = false;
+  // When the pair was produced by gauss_deferred(), its value is kept as the raw polar-method draw
+  // (x, w) and only transformed if it is actually consumed.
+  bool   gauss_pair_raw = false;
+  double gauss_pair_x = 0.0;
+  double gauss_pair_w = 0.0;
+  // gauss_ab() CDF memo (NaN keys never compare equal, so the first call always computes)
+  double cdf_memo_min = std::numeric_limits<double>::quiet_NaN();
+  double cdf_memo_max = std::numeric_limits<double>::quiet_NaN();
+  double cdf_memo_mean = std::numeric_limits<double>::quiet_NaN();
+  double cdf_memo_stddev = std::numeric_limits<double>::quiet_NaN();
+  double cdf_memo_min_cdf = 0.0;
+  double cdf_memo_max_cdf = 0.0;
 #ifdef RNG_STREAM_DEBUG
   uint64_t n = 0U;
 #endif
+
+  static double polar_transform( double x, double w )
+  { return x * std::sqrt( ( -2.0 * std::log( w ) ) / w ); }
+
+public:
+  /// A standard normal draw whose (costly) value is only computed when asked for.
+  struct deferred_gauss_t
+  {
+    double x, w, value;
+    bool raw;
+    double get( double mean, double stddev ) const
+    { return mean + ( raw ? polar_transform( x, w ) : value ) * stddev; }
+  };
+
+  /// Advance the generator exactly like gauss( mean, stddev ) with stddev != 0 does, but defer
+  /// the log/sqrt of the polar method until deferred_gauss_t::get() is called. get() returns
+  /// bit-identical values to gauss().
+  deferred_gauss_t gauss_deferred();
 };
+
+template <typename Engine>
+typename basic_rng_t<Engine>::deferred_gauss_t basic_rng_t<Engine>::gauss_deferred()
+{
+  if ( gauss_pair_use )
+  {
+    gauss_pair_use = false;
+    if ( gauss_pair_raw )
+    {
+      gauss_pair_raw = false;
+      return { gauss_pair_x, gauss_pair_w, 0.0, true };
+    }
+    return { 0.0, 0.0, gauss_pair_value, false };
+  }
+
+  double x1, x2, w;
+  do
+  {
+    x1 = 2.0 * real() - 1.0;
+    x2 = 2.0 * real() - 1.0;
+    w = x1 * x1 + x2 * x2;
+  }
+  while ( w >= 1.0 || w == 0.0 );
+
+  gauss_pair_use = true;
+  gauss_pair_raw = true;
+  gauss_pair_x = x2;
+  gauss_pair_w = w;
+
+  return { x1, w, 0.0, true };
+}
 
 /// Reseed using current state
 template <typename Engine>
@@ -226,6 +287,7 @@ void basic_rng_t<Engine>::reset()
 {
   gauss_pair_value = 0;
   gauss_pair_use = false;
+  gauss_pair_raw = false;
 #ifdef RNG_STREAM_DEBUG
   n = 0U;
 #endif
@@ -303,6 +365,11 @@ double basic_rng_t<Engine>::gauss( double mean, double stddev )
   if ( gauss_pair_use )
   {
     gauss_pair_use = false;
+    if ( gauss_pair_raw )
+    {
+      gauss_pair_raw = false;
+      return mean + polar_transform( gauss_pair_x, gauss_pair_w ) * stddev;
+    }
     return mean + gauss_pair_value * stddev;
   }
 
@@ -321,6 +388,7 @@ double basic_rng_t<Engine>::gauss( double mean, double stddev )
 
   gauss_pair_value = y2;
   gauss_pair_use = true;
+  gauss_pair_raw = false;
 
   return mean + y1 * stddev;
 }
@@ -340,8 +408,18 @@ double basic_rng_t<Engine>::gauss_ab( double mean, double stddev, double min, do
   if ( min == max )
     return min;
 
-  double min_cdf      = stdnormal_cdf( ( min - mean ) / stddev );
-  double max_cdf      = stdnormal_cdf( ( max - mean ) / stddev );
+  // Callers mostly reuse the same (mean, stddev, bounds) (reaction times, lags): remember the last CDF bounds.
+  if ( !( min == cdf_memo_min && max == cdf_memo_max && mean == cdf_memo_mean && stddev == cdf_memo_stddev ) )
+  {
+    cdf_memo_min      = min;
+    cdf_memo_max      = max;
+    cdf_memo_mean     = mean;
+    cdf_memo_stddev   = stddev;
+    cdf_memo_min_cdf  = stdnormal_cdf( ( min - mean ) / stddev );
+    cdf_memo_max_cdf  = stdnormal_cdf( ( max - mean ) / stddev );
+  }
+  double min_cdf      = cdf_memo_min_cdf;
+  double max_cdf      = cdf_memo_max_cdf;
   double uniform      = real();
   double rescaled_cdf = min_cdf + uniform * ( max_cdf - min_cdf );
   return mean + stddev * stdnormal_inv( rescaled_cdf );
