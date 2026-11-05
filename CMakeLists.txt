@@ -18,6 +18,9 @@ option(SC_USE_FLAT_INSTALL "Install files into a flat folder structure" ${WIN32}
 
 option(SC_EVENT_QUEUE_DEBUG "Enable Event Queue Debug Info" OFF)
 
+# Optional LTO / PGO release optimizations (SC_LTO, SC_PGO)
+include(${PROJECT_SOURCE_DIR}/cmake/optimization.cmake)
+
 set(CMAKE_CXX_STANDARD 20 CACHE STRING "C++ standard to conform to")
 set(CMAKE_CXX_STANDARD_REQUIRED YES)
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -80,6 +83,7 @@ endif()
 add_executable(simc engine/sc_main.cpp)
 target_link_libraries(simc engine)
 sc_common_compiler_options(simc)
+sc_apply_optimizations(engine simc)
 
 install(TARGETS simc DESTINATION ${SIMC_INSTALL_BIN})
 
