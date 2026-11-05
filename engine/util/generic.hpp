@@ -130,6 +130,23 @@ inline void dispose( I first, I last )
   dispose( first, last, delete_disposer_t() );
 }
 
+// Bit-identical replacement for std::round( double ) (round half away from zero) that avoids the
+// CRT call in hot paths: for |x| < 2^52 the integer truncation and x - trunc(x) are both exact.
+inline double fast_round( double x )
+{
+  if ( !( std::fabs( x ) < 4.0e15 ) )
+    return std::round( x );
+  double r    = static_cast<double>( static_cast<long long>( x ) );
+  double frac = x - r;
+  if ( frac >= 0.5 )
+    r += 1.0;
+  else if ( frac <= -0.5 )
+    r -= 1.0;
+  if ( r == 0.0 )  // std::round keeps the sign of zero (x itself when x is +-0)
+    return x < 0.0 ? -0.0 : ( x == 0.0 ? x : 0.0 );
+  return r;
+}
+
 // Machinery for range-based generic algorithms =============================
 
 namespace range

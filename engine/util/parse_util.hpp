@@ -5,9 +5,12 @@
 
 #include "config.hpp"
 
+#include "util/generic.hpp"
 #include "util/timespan.hpp"
 
 #include <array>
+#include <cmath>
+#include <cstdint>
 #include <vector>
 
 #pragma once
@@ -32,7 +35,11 @@ struct parsed_value_t
     {
       // timespan_t truncates to the nearest second, but in-game testing suggests aura periods & durations are rounded instead.
       // if this holds for all time values, timespan_t should be adjusted instead.
-      return timespan_t::from_native( std::round( timespan_t::to_native( base + flat_add ) * pct_mul ) );
+      const auto native = timespan_t::to_native( base + flat_add );
+      constexpr timespan_t::native_t exact = timespan_t::native_t( 1 ) << 52;
+      if ( pct_mul == 1.0 && native < exact && native > -exact )  // round( integer ) is the integer itself
+        return timespan_t::from_native( native );
+      return timespan_t::from_native( fast_round( native * pct_mul ) );
     }
     else
     {

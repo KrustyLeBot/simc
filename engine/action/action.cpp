@@ -1267,7 +1267,7 @@ timespan_t action_t::execute_time() const
     return 0_ms;
 
   // TODO: assumed to be rounded to ms like tick_time(), confirm if possible.
-  return timespan_t::from_millis( std::round( static_cast<double>( base.total_millis() ) * mul ) );
+  return timespan_t::from_millis( fast_round( static_cast<double>( base.total_millis() ) * mul ) );
 }
 
 timespan_t action_t::execute_time_flat_modifier() const
@@ -1456,7 +1456,7 @@ double action_t::calculate_tick_amount( action_state_t* state, double dot_multip
 
   // Base amount rounded to some decimal, but the exact precision is currently unknown. For now assume 3 digits as that
   // is what AP/SP multipliers seem to be rounded to.
-  amount = std::round( amount * 1000 ) * 0.001;
+  amount = fast_round( amount * 1000 ) * 0.001;
   // Assuming both flat value tick amount and coeff tick amount are rolled into rolling periodics. Adjust if disproven.
   amount += bonus_ta( state );
   amount += state->composite_spell_power() * spell_tick_power_coefficient( state );
@@ -4311,7 +4311,7 @@ timespan_t action_t::tick_time( const action_state_t* s ) const
   // Assuming this applies to all tick time, including hasted duration dots. As tick time is used in calculation for
   // hasted duration (in order to ensure # of ticks match) using rounding for tick time can have a non-trivial impact
   // on short duration dots with a large number of ticks, such as eye beam.
-  return timespan_t::from_millis( std::round( static_cast<double>( base.total_millis() ) * mul ) );
+  return timespan_t::from_millis( fast_round( static_cast<double>( base.total_millis() ) * mul ) );
 }
 
 timespan_t action_t::tick_time_flat_modifier( const action_state_t* ) const
@@ -4418,7 +4418,7 @@ timespan_t action_t::composite_dot_duration( const action_state_t* s ) const
       // assert( static_cast<double>( static_cast<int>( _num_ticks ) ) == _num_ticks );
 
       // rebuild duration based on hasted tick time * number of ticks
-      return timespan_t::from_millis( std::round( _tick_time * s->haste ) * _num_ticks );
+      return timespan_t::from_millis( fast_round( _tick_time * s->haste ) * _num_ticks );
     }
     else
     {
@@ -4427,7 +4427,7 @@ timespan_t action_t::composite_dot_duration( const action_state_t* s ) const
   }
 
   // TODO: assumed to be rounded to ms like tick_time(), confirm if possible.
-  return timespan_t::from_millis( std::round( static_cast<double>( base.total_millis() ) * mul ) );
+  return timespan_t::from_millis( fast_round( static_cast<double>( base.total_millis() ) * mul ) );
 }
 
 timespan_t action_t::dot_duration_flat_modifier( const action_state_t* ) const
