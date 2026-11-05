@@ -1,0 +1,73 @@
+name: release-pgo
+
+# Builds the LTO + PGO optimized command line binary with tools/pgo_build.py on each supported compiler,
+# and checks that its results are bit-identical to a plain Release build.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [midnight]
+    paths-ignore:
+      - "ActionPriorityLists/**"
+      - "SpellDataDump/*.txt"
+      - "dbc_extract3/**"
+      - "casc_extract/**"
+  pull_request:
+    branches: [midnight]
+    paths:
+      - "CMakeLists.txt"
+      - "cmake/**"
+      - "engine/CMakeLists.txt"
+      - "tools/pgo_build.py"
+      - ".github/workflows/release_pgo.yml"
+
+concurrency:
+  group: release-pgo-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux:
+    name: ubuntu-${{ matrix.compiler }}-lto-pgo
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - compiler: clang++-20
+            cmake_args: -DCMAKE_CXX_COMPILER=clang++-20 -DCMAKE_EXE_LINKER_FLAGS=-fuse-ld=lld
+          - compiler: g++-13
+            cmake_args: -DCMAKE_CXX_COMPILER=g++-13
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build
+
+      - name: LTO + PGO build and verification
+        run: >
+          python3 tools/pgo_build.py --verify --train-iterations 100 --verify-iterations 50
+          -- -GNinja -DSC_NO_NETWORKING=ON ${{ matrix.cmake_args }}
+
+  windows:
+    name: windows-msvc-lto-pgo
+    runs-on: windows-latest
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: step-security/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: LTO + PGO build and verification
+        run: >
+          python tools/pgo_build.py --verify
+          -- -GNinja -DSC_NO_NETWORKING=ON
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: simc-windows-x64-lto-pgo
+          path: build_pgo/simc.exe
